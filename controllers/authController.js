@@ -3,7 +3,7 @@ const TokenTransaction = require('../models/TokenTransaction');
 const jwt = require('jsonwebtoken');
 
 const signToken = (id) =>
-  jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: '7d' });
+  jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: '10h' });
 
 // POST /api/auth/register
 exports.register = async (req, res) => {
@@ -17,7 +17,7 @@ exports.register = async (req, res) => {
     const exists = await User.findOne({ email });
     if (exists) return res.status(400).json({ success: false, message: 'Email already registered.' });
 
-    const defaultTokens = parseInt(process.env.DEFAULT_TOKENS) || 10;
+    const defaultTokens = parseInt(process.env.DEFAULT_TOKENS) || 50;
     const user = await User.create({ name, shopName, email, password, tokens: defaultTokens });
 
     // Log initial token credit
