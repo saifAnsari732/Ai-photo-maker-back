@@ -31,11 +31,11 @@ const userSchema = new mongoose.Schema({
   },
   tokens: {
     type: Number,
-    default: 10,
+    default: 30,
   },
   totalTokensGiven: {
     type: Number,
-    default: 10,
+    default: 30,
   },
   totalImagesGenerated: {
     type: Number,
