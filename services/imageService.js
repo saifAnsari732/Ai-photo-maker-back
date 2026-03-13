@@ -1,22 +1,22 @@
 /**
- * imageService.js — Memory-optimised for Render free tier (512MB)
- * ════════════════════════════════════════════════════════════════
- *  @imgly REMOVED — was causing OOM crash (used >512MB)
- *
- *  STEP 1 → sharp  : Background removal via corner-colour flood-fill
- *                    Works great for passport photos with plain bg
- *  STEP 2 → sharp  : Apply chosen background colour
- *  STEP 3 → cutout.pro (optional, skip if no key)
- *  STEP 4 → Cloudinary : Save original + processed (non-blocking)
- *  STEP 5 → sharp  : Resize to passport size + border
- *  STEP 6 → sharp  : A4 layout composite
- *  STEP 7 → PDFKit : PDF export
+ * imageService.js — PhotoRoom AI Background Removal
+ * ══════════════════════════════════════════════════
+ *  STEP 1 → PhotoRoom API  : AI background removal (1000 free/month)
+ *           Fallback        : original image if API fails
+ *  STEP 2 → sharp          : Apply background colour
+ *  STEP 3 → cutout.pro     : Enhancement (optional)
+ *  STEP 4 → Cloudinary     : Save original + processed
+ *  STEP 5 → sharp          : Resize + border
+ *  STEP 6 → sharp          : A4 layout
+ *  STEP 7 → PDFKit         : PDF export
  */
 
 const sharp       = require('sharp');
 const PDFDocument = require('pdfkit');
 const cloudinary  = require('cloudinary').v2;
 const streamifier = require('streamifier');
+const axios       = require('axios');
+const FormData    = require('form-data');
 
 cloudinary.config({
   cloud_name : process.env.CLOUDINARY_CLOUD_NAME,
@@ -34,92 +34,95 @@ function hexToRgb(hex) {
 }
 
 // ══════════════════════════════════════════════════════════
-// STEP 1: Background removal using sharp pixel manipulation
-// Samples corners → treats near-matching pixels as background
-// Memory usage: ~20-40MB (vs @imgly's 400MB+)
+// STEP 1: PhotoRoom AI Background Removal
+// 1000 free images/month, no memory issues on Render
 // ══════════════════════════════════════════════════════════
 async function removeBg(imageBuffer) {
-  console.log('  → Step 1: sharp corner-based bg removal (low memory)...');
+  const apiKey = process.env.PHOTOROOM_API_KEY;
+
+  if (!apiKey) {
+    console.warn('  ⚠️  PHOTOROOM_API_KEY not set — skipping bg removal');
+    return imageBuffer;
+  }
 
   try {
-    // Convert to raw RGBA pixels
-    const { data, info } = await sharp(imageBuffer)
-      .ensureAlpha()
-      .raw()
-      .toBuffer({ resolveWithObject: true });
+    console.log('  → Step 1: PhotoRoom AI background removal...');
 
-    const { width, height, channels } = info; // channels = 4 (RGBA)
-    const px = (x, y) => (y * width + x) * channels;
+    const form = new FormData();
+    form.append('imageFile', imageBuffer, {
+      filename    : 'photo.jpg',
+      contentType : 'image/jpeg',
+    });
+    // outputType=cutout returns PNG with transparent background
+    form.append('outputType', 'cutout');
 
-    // Sample all 4 corners to get bg colour
-    const corners = [
-      [0, 0], [width - 1, 0],
-      [0, height - 1], [width - 1, height - 1],
-    ];
-
-    // Average corner colours
-    let sumR = 0, sumG = 0, sumB = 0;
-    for (const [cx, cy] of corners) {
-      const i = px(cx, cy);
-      sumR += data[i]; sumG += data[i+1]; sumB += data[i+2];
-    }
-    const bgR = sumR / 4, bgG = sumG / 4, bgB = sumB / 4;
-    console.log(`     Detected bg colour: rgb(${Math.round(bgR)}, ${Math.round(bgG)}, ${Math.round(bgB)})`);
-
-    // Threshold: how similar a pixel needs to be to bg to be removed
-    const THRESHOLD = 35;
-
-    // Make bg pixels transparent
-    const out = Buffer.from(data); // copy
-    for (let y = 0; y < height; y++) {
-      for (let x = 0; x < width; x++) {
-        const i = px(x, y);
-        const r = data[i], g = data[i+1], b = data[i+2];
-        const dist = Math.sqrt(
-          (r - bgR) ** 2 + (g - bgG) ** 2 + (b - bgB) ** 2
-        );
-        // Smooth edge transition (anti-aliased alpha)
-        if (dist < THRESHOLD) {
-          out[i+3] = 0; // fully transparent
-        } else if (dist < THRESHOLD + 20) {
-          out[i+3] = Math.round(((dist - THRESHOLD) / 20) * 255); // soft edge
-        }
-        // else: fully opaque (leave as-is)
+    const res = await axios.post(
+      'https://sdk.photoroom.com/v1/segment',
+      form,
+      {
+        headers: {
+          ...form.getHeaders(),
+          'x-api-key': apiKey,
+        },
+        responseType : 'arraybuffer',
+        timeout      : 60000,
       }
+    );
+
+    if (res.status === 200 && res.data) {
+      console.log('  ✅ PhotoRoom bg removal success');
+      return Buffer.from(res.data); // PNG with alpha
     }
 
-    const pngBuffer = await sharp(out, {
-      raw: { width, height, channels: 4 },
-    }).png().toBuffer();
-
-    console.log('  ✅ Background removed (sharp, low memory)');
-    return pngBuffer;
+    console.warn('  ⚠️  PhotoRoom: unexpected response — using original');
+    return imageBuffer;
 
   } catch (err) {
-    console.warn(`  ⚠️  BG removal failed: ${err.message} — using original`);
+    const status  = err.response?.status;
+    const message = err.response?.data
+      ? Buffer.from(err.response.data).toString().slice(0, 100)
+      : err.message;
+    console.warn(`  ⚠️  PhotoRoom failed [${status}]: ${message} — using original`);
     return imageBuffer;
   }
 }
 
 // ══════════════════════════════════════════════════════════
-// STEP 2: Apply solid background colour
+// STEP 2: Apply background colour
 // ══════════════════════════════════════════════════════════
 async function applyBackground(pngBuffer, bgHex = '#ffffff') {
   const { r, g, b } = hexToRgb(bgHex);
 
+  // Check if buffer is actually PNG with alpha or fallback JPEG
   const meta = await sharp(pngBuffer).metadata();
 
-  const bgLayer = await sharp({
-    create: {
-      width: meta.width, height: meta.height,
-      channels: 4, background: { r, g, b, alpha: 1 },
-    },
-  }).png().toBuffer();
+  if (meta.hasAlpha) {
+    // Proper alpha compositing
+    const bgLayer = await sharp({
+      create: {
+        width: meta.width, height: meta.height,
+        channels: 4, background: { r, g, b, alpha: 1 },
+      },
+    }).png().toBuffer();
 
-  return sharp(bgLayer)
-    .composite([{ input: pngBuffer, blend: 'over' }])
-    .jpeg({ quality: 96, mozjpeg: true })
-    .toBuffer();
+    return sharp(bgLayer)
+      .composite([{ input: pngBuffer, blend: 'over' }])
+      .jpeg({ quality: 96, mozjpeg: true })
+      .toBuffer();
+  } else {
+    // No alpha — just put image on bg colour canvas
+    const rgb = await sharp(pngBuffer).jpeg({ quality: 96 }).toBuffer();
+    const bgLayer = await sharp({
+      create: {
+        width: meta.width, height: meta.height,
+        channels: 3, background: { r, g, b },
+      },
+    }).jpeg().toBuffer();
+    return sharp(bgLayer)
+      .composite([{ input: rgb, blend: 'over' }])
+      .jpeg({ quality: 96 })
+      .toBuffer();
+  }
 }
 
 // ══════════════════════════════════════════════════════════
@@ -131,9 +134,7 @@ async function enhanceWithCutoutPro(imageBuffer) {
     return imageBuffer;
   }
   try {
-    const axios    = require('axios');
-    const FormData = require('form-data');
-    const form     = new FormData();
+    const form = new FormData();
     form.append('file', imageBuffer, { filename: 'photo.jpg', contentType: 'image/jpeg' });
 
     const res = await axios.post(
@@ -157,7 +158,7 @@ async function enhanceWithCutoutPro(imageBuffer) {
 }
 
 // ══════════════════════════════════════════════════════════
-// STEP 4: Upload to Cloudinary (non-blocking)
+// STEP 4: Cloudinary upload (non-blocking)
 // ══════════════════════════════════════════════════════════
 async function uploadToCloudinary(imageBuffer, folder, publicId) {
   if (!process.env.CLOUDINARY_CLOUD_NAME) return null;
@@ -178,7 +179,7 @@ async function uploadToCloudinary(imageBuffer, folder, publicId) {
 }
 
 // ══════════════════════════════════════════════════════════
-// STEP 5: Resize to passport size + black border
+// STEP 5: Resize + border
 // ══════════════════════════════════════════════════════════
 async function makePassportPhoto(imageBuffer, { width = 390, height = 480, borderPx = 2 }) {
   const resized = await sharp(imageBuffer)
@@ -196,7 +197,7 @@ async function makePassportPhoto(imageBuffer, { width = 390, height = 480, borde
 }
 
 // ══════════════════════════════════════════════════════════
-// STEP 6: A4 layout (300 DPI)
+// STEP 6: A4 layout
 // ══════════════════════════════════════════════════════════
 async function buildPassportSheet(passportImages, options) {
   const { passportW = 390, passportH = 480, borderPx = 2, spacing = 10 } = options;
@@ -235,7 +236,7 @@ async function buildPassportSheet(passportImages, options) {
 }
 
 // ══════════════════════════════════════════════════════════
-// STEP 7: PDF export
+// STEP 7: PDF
 // ══════════════════════════════════════════════════════════
 async function buildPDF(pageBuffers) {
   return new Promise((resolve, reject) => {
@@ -271,7 +272,7 @@ async function processPassportBatch(imagesData, options) {
     const { buffer, copies, name } = imagesData[i];
     console.log(`\n📸 [${i+1}/${imagesData.length}] Processing: ${name}`);
 
-    // 1. Remove bg (sharp, ~30MB RAM)
+    // 1. PhotoRoom bg removal
     const noBgBuffer = await removeBg(buffer);
 
     // 2. Save original to Cloudinary (fire & forget)
