@@ -49,12 +49,10 @@ async function removeBg(imageBuffer) {
     console.log('  → Step 1: PhotoRoom AI background removal...');
 
     const form = new FormData();
-    form.append('imageFile', imageBuffer, {
+    form.append('image_file', imageBuffer, {
       filename    : 'photo.jpg',
       contentType : 'image/jpeg',
     });
-    // outputType=cutout returns PNG with transparent background
-    form.append('outputType', 'cutout');
 
     const res = await axios.post(
       'https://sdk.photoroom.com/v1/segment',
@@ -62,7 +60,8 @@ async function removeBg(imageBuffer) {
       {
         headers: {
           ...form.getHeaders(),
-          'x-api-key': apiKey,
+          'x-api-key'  : apiKey,
+          'Accept'     : 'image/png',
         },
         responseType : 'arraybuffer',
         timeout      : 60000,
