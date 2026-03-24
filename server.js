@@ -49,7 +49,7 @@ mongoose.connect(process.env.MONGODB_URI)
         password : 'admin123456',
         role     : 'admin',
         tokens   : 999999,
-      });
+      });  
       console.log('✅ Admin created  →  admin@passportpro.com  /  admin123456');
       console.log('⚠️  Please change the admin password after first login!');
     }
