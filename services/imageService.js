@@ -42,7 +42,7 @@ async function removeBg(imageBuffer, bgColor = '#ffffff') {
   const outPath   = path.join(tmpDir, `rembg_out_${Date.now()}.jpg`);
   const pythonCmd  = process.platform === 'win32' ? 'python' : 'python3';
   const scriptPath = path.join(__dirname, '..', 'remove_bg.py');
-
+// mmfm md cqejlkvwrivuwrbwr ib
   try {
     console.log(`  → Step 1: rembg bg removal (color: ${bgColor})...`);
     fs.writeFileSync(inputPath, imageBuffer);
@@ -64,7 +64,6 @@ async function removeBg(imageBuffer, bgColor = '#ffffff') {
     if (fs.existsSync(outPath))   fs.unlinkSync(outPath);
   }
 }
-
 async function applyBackground(pngBuffer, bgHex = '#ffffff') {
   const { r, g, b } = hexToRgb(bgHex);
   const meta = await sharp(pngBuffer).metadata();
